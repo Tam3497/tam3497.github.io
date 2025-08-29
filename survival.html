@@ -1,0 +1,387 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Mini Survival Game</title>
+  <style>
+    body {
+      margin: 0;
+      background: #111;
+      color: #fff;
+      font-family: monospace;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: flex-start;
+      height: 100vh;
+      overflow: hidden;
+    }
+    canvas {
+      background: #333;
+      margin-top: 10px;
+      border: 2px solid #fff;
+      max-width: 100%;
+    }
+    #ui {
+      text-align: center;
+      margin-top: 5px;
+    }
+    button {
+      margin: 5px;
+      padding: 5px 10px;
+      background: #444;
+      color: #fff;
+      border: 1px solid #888;
+      cursor: pointer;
+    }
+    button:hover {
+      background: #666;
+    }
+    #overlay {
+      position: absolute;
+      top: 0; left: 0;
+      width: 100%; height: 100%;
+      background: rgba(255,0,0,0);
+      pointer-events: none;
+      transition: background 0.2s;
+    }
+    #gameover {
+      position: absolute;
+      top: 0; left: 0;
+      width: 100%; height: 100%;
+      background: rgba(0,0,0,0.9);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      color: white;
+      font-size: 20px;
+      display: none;
+    }
+    #gameover button {
+      margin-top: 20px;
+    }
+  </style>
+</head>
+<body>
+  <h1>💰 Mini Survival</h1>
+  <canvas id="game" width="500" height="500"></canvas>
+  <div id="ui">
+    <p id="stats">Day: 1 | Time: 0s | HP: 100 | Gold: 0</p>
+    <button onclick="buildWall()">Build Wall (2 gold) [B]</button>
+    <button onclick="refillAmmo()">Refill Ammo (10 gold) [G]</button>
+  </div>
+
+  <div id="overlay"></div>
+  <div id="gameover">
+    <h2>☠️ Game Over</h2>
+    <p id="finalScore"></p>
+    <p id="bestScore"></p>
+    <button onclick="restartGame()">Restart</button>
+  </div>
+
+  <script>
+    const canvas = document.getElementById("game");
+    const ctx = canvas.getContext("2d");
+    const statsEl = document.getElementById("stats");
+    const overlay = document.getElementById("overlay");
+    const gameoverEl = document.getElementById("gameover");
+    const finalScoreEl = document.getElementById("finalScore");
+    const bestScoreEl = document.getElementById("bestScore");
+
+    let player, gold, walls, monsters, drops, bullets, effects, puddles, spitShots;
+    let day, isNight, survivalTime, startTime, gameOver;
+    let ammo;
+    let mouse = { x: 250, y: 250 };
+
+    // Spawn timers for each special monster
+    let spitterTimer = 0, tankTimer = 0, chargerTimer = 0;
+
+    function initGame() {
+      player = { x: 250, y: 250, hp: 100, speed: 2.5 };
+      gold = 0;
+      walls = [];
+      monsters = [];
+      drops = [];
+      bullets = [];
+      puddles = [];
+      spitShots = [];
+      effects = [];
+      day = 1;
+      isNight = false;
+      survivalTime = 0;
+      startTime = Date.now();
+      gameOver = false;
+      ammo = 0;
+      spawnDrops(10); // enough gold early
+      updateUI();
+      gameoverEl.style.display = "none";
+      requestAnimationFrame(gameLoop);
+    }
+
+    function buildWall() {
+      if (gold >= 2) {
+        gold -= 2;
+        walls.push({ x: player.x, y: player.y, hp: 200 });
+        addEffect(player.x, player.y, "🧱 Wall Built");
+        updateUI();
+      }
+    }
+
+    function refillAmmo() {
+      if (gold >= 10) {
+        gold -= 10;
+        ammo += 10;
+        addEffect(player.x, player.y, "🔫 +10 Ammo");
+        updateUI();
+      }
+    }
+
+    function spawnDrops(n) {
+      for (let i = 0; i < n; i++) {
+        drops.push({ x: Math.random()*480, y: Math.random()*480 });
+      }
+    }
+
+    function updateUI() {
+      survivalTime = Math.floor((Date.now() - startTime) / 1000);
+      statsEl.textContent = `Day: ${day} | Time: ${survivalTime}s | HP: ${Math.floor(player.hp)} | Gold: ${gold} | Ammo: ${ammo}`;
+    }
+
+    function gameLoop() {
+      if (gameOver) return;
+      ctx.clearRect(0,0,canvas.width,canvas.height);
+
+      // Player movement
+      let dx = mouse.x - player.x;
+      let dy = mouse.y - player.y;
+      let dist = Math.sqrt(dx*dx+dy*dy);
+      if (dist>1){player.x+=(dx/dist)*player.speed; player.y+=(dy/dist)*player.speed;}
+      player.x=Math.max(0,Math.min(canvas.width-10,player.x));
+      player.y=Math.max(0,Math.min(canvas.height-10,player.y));
+
+      // Acid puddles
+      puddles.forEach(p=>{
+        ctx.fillStyle="rgba(0,255,0,0.4)";
+        ctx.beginPath();
+        ctx.arc(p.x,p.y,15,0,Math.PI*2);
+        ctx.fill();
+        p.life--;
+        if(Math.abs(player.x-p.x)<15&&Math.abs(player.y-p.y)<15){
+          player.hp-=0.1;
+          if(player.hp<=0) endGame();
+        }
+      });
+      puddles=puddles.filter(p=>p.life>0);
+
+      // Spitter shots
+      ctx.fillStyle="lime";
+      spitShots.forEach(s=>{
+        ctx.beginPath(); ctx.arc(s.x,s.y,4,0,Math.PI*2); ctx.fill();
+        s.x+=s.vx; s.y+=s.vy;
+        if(Math.abs(player.x-s.x)<10&&Math.abs(player.y-s.y)<10){
+          puddles.push({x:s.x,y:s.y,life:200});
+          s.hit=true;
+        }
+      });
+      spitShots=spitShots.filter(s=>!s.hit&&s.x>0&&s.x<500&&s.y>0&&s.y<500);
+
+      // Player
+      ctx.fillStyle="cyan"; ctx.fillRect(player.x,player.y,10,10);
+
+      // Walls
+      ctx.fillStyle="brown";
+      walls.forEach(w=>{
+        ctx.fillRect(w.x,w.y,20,20);
+        ctx.fillStyle="white"; ctx.font="10px monospace"; ctx.fillText(w.hp,w.x,w.y-2);
+        ctx.fillStyle="brown";
+      });
+
+      // Monsters
+      monsters.forEach((m, i) => {
+        if (m.type === "normal") ctx.fillStyle = "red";
+        if (m.type === "spitter") ctx.fillStyle = "lime";
+        if (m.type === "tank") ctx.fillStyle = "darkred";
+        if (m.type === "charger") ctx.fillStyle = "blue";
+        ctx.fillRect(m.x, m.y, m.size, m.size);
+
+        if (m.type === "charger") {
+          // Straight line movement
+          m.x += m.vx * m.speed;
+          m.y += m.vy * m.speed;
+
+          // Keep inside canvas
+          m.x = Math.max(0, Math.min(canvas.width - m.size, m.x));
+          m.y = Math.max(0, Math.min(canvas.height - m.size, m.y));
+
+          // If hit wall, re-aim at player
+          if (m.x === 0 || m.x === canvas.width - m.size || m.y === 0 || m.y === canvas.height - m.size) {
+            let dx = player.x - m.x;
+            let dy = player.y - m.y;
+            let length = Math.sqrt(dx * dx + dy * dy);
+            if (length > 0) {
+              m.vx = dx / length;
+              m.vy = dy / length;
+            }
+          }
+        } else {
+          // Normal / spitter / tank movement
+          let dx = player.x - m.x,
+              dy = player.y - m.y,
+              d = Math.sqrt(dx * dx + dy * dy);
+
+          if (m.type === "spitter") {
+            m.cooldown--;
+            if (m.cooldown <= 0 && d < 200) {
+              spitShots.push({ x: m.x, y: m.y, vx: (dx / d) * 2, vy: (dy / d) * 2 });
+              m.cooldown = 150;
+            }
+          }
+
+          let hitWall = walls.find(w => Math.abs(m.x - w.x) < 20 && Math.abs(m.y - w.y) < 20);
+          if (hitWall) {
+            hitWall.hp -= 0.2;
+            if (hitWall.hp <= 0) walls = walls.filter(w => w !== hitWall);
+          } else {
+            m.x += (dx / d) * m.speed;
+            m.y += (dy / d) * m.speed;
+          }
+        }
+
+        // damage player if close enough
+        let dxP = player.x - m.x,
+            dyP = player.y - m.y,
+            dP = Math.sqrt(dxP * dxP + dyP * dyP);
+        if (dP < m.size + 5) {
+          player.hp -= 0.2;
+          flashHit();
+          if (player.hp <= 0) endGame();
+        }
+
+        // Repulsion fix (avoid overlap between monsters)
+        monsters.forEach((o, j) => {
+          if (i !== j) {
+            let dx2 = m.x - o.x,
+                dy2 = m.y - o.y,
+                d2 = Math.sqrt(dx2 * dx2 + dy2 * dy2);
+            if (d2 < Math.max(m.size, o.size) && d2 > 0) {
+              m.x += dx2 / d2;
+              m.y += dy2 / d2;
+            }
+          }
+        });
+      });
+
+      // Drops
+      drops.forEach(d=>{ctx.fillStyle="gold";ctx.fillRect(d.x,d.y,8,8);});
+      drops=drops.filter(d=>{
+        if(Math.abs(player.x-d.x)<10&&Math.abs(player.y-d.y)<10){
+          gold++; addEffect(d.x,d.y,"+1 Gold"); updateUI(); return false;
+        }
+        return true;
+      });
+
+      // Bullets
+      ctx.fillStyle="yellow";
+      bullets.forEach(b=>ctx.fillRect(b.x,b.y,4,4));
+      bullets.forEach(b=>{
+        b.x+=b.vx; b.y+=b.vy;
+        monsters.forEach(m=>{if(Math.abs(b.x-m.x)<m.size&&Math.abs(b.y-m.y)<m.size){m.hp-=10;b.hit=true;}});
+      });
+      bullets=bullets.filter(b=>!b.hit&&b.x>0&&b.x<500&&b.y>0&&b.y<500);
+      monsters=monsters.filter(m=>m.hp>0);
+
+      // Effects
+      ctx.fillStyle="white"; ctx.font="12px monospace";
+      effects.forEach(e=>{ctx.fillText(e.text,e.x,e.y); e.y-=0.5; e.life--;});
+      effects=effects.filter(e=>e.life>0);
+
+      updateUI();
+      requestAnimationFrame(gameLoop);
+    }
+
+    function addEffect(x,y,text){effects.push({x,y,text,life:30});}
+    function flashHit(){overlay.style.background="rgba(255,0,0,0.4)";setTimeout(()=>overlay.style.background="rgba(255,0,0,0)",200);}
+    function endGame(){
+      gameOver=true;
+      finalScoreEl.textContent=`You survived ${survivalTime} seconds and ${day} days.`;
+      let best=localStorage.getItem("bestScore")||0;
+      if(survivalTime>best){best=survivalTime;localStorage.setItem("bestScore",best);}
+      bestScoreEl.textContent=`Best Survival: ${best} seconds`;
+      gameoverEl.style.display="flex";
+    }
+    function restartGame(){initGame();}
+
+    // Day/Night cycle
+    setInterval(()=>{
+      if(gameOver)return;
+      isNight=!isNight;
+      if(isNight){
+        // normal wave
+        for(let i=0;i<day;i++){monsters.push({type:"normal",x:Math.random()*480,y:Math.random()*480,hp:20,speed:1.2,size:10});}
+      } else {
+        day++; spawnDrops(day<6?10:5);
+      }
+      updateUI();
+    },6000); // longer cycle
+
+    // Special zombie spawns (independent timers during night)
+    setInterval(()=>{
+      if(gameOver||!isNight||day<3) return;
+      spitterTimer++;
+      let interval=Math.max(100-(day*5),80); // shorter with later days
+      if(spitterTimer+Math.random()*10>=interval){
+        monsters.push({type:"spitter",x:Math.random()*480,y:Math.random()*480,hp:30,speed:1.0,size:12,cooldown:0});
+        spitterTimer=0;
+      }
+    },100);
+
+    setInterval(()=>{
+      if(gameOver||!isNight||day<7) return;
+      tankTimer++;
+      let interval=Math.max(200-(day*10),150);
+      if(tankTimer+Math.random()*10>=interval){
+        monsters.push({type:"tank",x:Math.random()*480,y:Math.random()*480,hp:150,speed:0.5,size:20});
+        tankTimer=0;
+      }
+    },100);
+
+    setInterval(()=>{
+      if(gameOver||!isNight||day<5) return;
+      chargerTimer++;
+      let interval=Math.max(150-(day*8),120);
+      if(chargerTimer+Math.random()*10>=interval){
+        // pick random direction
+        let dir=[[1,0],[-1,0],[0,1],[0,-1]][Math.floor(Math.random()*4)];
+        monsters.push({type:"charger",x:Math.random()*480,y:Math.random()*480,hp:60,speed:3,size:14,vx:dir[0],vy:dir[1]});
+        chargerTimer=0;
+      }
+    },100);
+
+    // Mouse
+    canvas.addEventListener("mousemove",e=>{
+      const rect=canvas.getBoundingClientRect();
+      mouse.x=e.clientX-rect.left; mouse.y=e.clientY-rect.top;
+    });
+
+    // Keys
+    document.addEventListener("keydown",e=>{
+      if(e.key.toLowerCase()==="b") buildWall();
+      if(e.key.toLowerCase()==="g") refillAmmo();
+      if(ammo>0){
+        if(e.key.toLowerCase()==="w") shoot(0,-1);
+        if(e.key.toLowerCase()==="s") shoot(0,1);
+        if(e.key.toLowerCase()==="a") shoot(-1,0);
+        if(e.key.toLowerCase()==="d") shoot(1,0);
+      }
+    });
+
+    function shoot(dx,dy){
+      bullets.push({x:player.x,y:player.y,vx:dx*4,vy:dy*4});
+      ammo--; addEffect(player.x,player.y,"💥 Bang!"); updateUI();
+    }
+
+    initGame();
+  </script>
+</body>
+</html>
